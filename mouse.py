@@ -3,13 +3,18 @@
 Install the dependencies with:
     python -m pip install opencv-python mediapipe pyautogui
 
+The MediaPipe hand model is downloaded beside this file the first time the
+program starts, so an internet connection is needed for that first launch.
 The webcam preview is mirrored so movement feels natural. Press Q in the
 preview window to exit. Move the pointer to the top-left corner to use
 PyAutoGUI's emergency stop if needed.
 """
 
 import math
+import shutil
 import time
+import urllib.request
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -25,6 +30,45 @@ SCROLL_BEND_ANGLE = 145
 SCROLL_STRAIGHT_ANGLE = 155
 SCROLL_TICKS_PER_DEGREE_PER_SECOND = 0.006
 MAX_SCROLL_TICKS_PER_BEND = 8
+MODEL_PATH = Path(__file__).resolve().with_name("hand_landmarker.task")
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+HAND_CONNECTIONS = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+)
+
+
+def ensure_hand_model():
+    """Download the official MediaPipe hand model once if it is not present."""
+    if MODEL_PATH.is_file():
+        return MODEL_PATH
+
+    temporary_path = MODEL_PATH.with_suffix(".task.part")
+    print("Downloading the MediaPipe hand model (one-time download)...")
+    try:
+        with urllib.request.urlopen(MODEL_URL, timeout=45) as response:
+            with temporary_path.open("wb") as model_file:
+                shutil.copyfileobj(response, model_file)
+        if temporary_path.stat().st_size < 100_000:
+            raise RuntimeError("The downloaded hand model is unexpectedly small.")
+        temporary_path.replace(MODEL_PATH)
+    except Exception as error:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise RuntimeError(
+            "Could not download the MediaPipe hand model. Check your internet "
+            "connection, or download hand_landmarker.task from Google's "
+            "MediaPipe Hand Landmarker model page and place it beside mouse.py."
+        ) from error
+    print("Hand model saved to {}".format(MODEL_PATH))
+    return MODEL_PATH
 
 
 def point_distance(a, b):
@@ -60,7 +104,7 @@ def describe_finger(angle, tip_y, pip_y, vertical_margin):
 
 def analyze_hand(hand_landmarks, frame_width, frame_height):
     """Return finger states, joint angles, and pixel coordinates for a hand."""
-    landmarks = hand_landmarks.landmark
+    landmarks = hand_landmarks
     pixels = [
         (int(point.x * frame_width), int(point.y * frame_height))
         for point in landmarks
@@ -105,6 +149,23 @@ def analyze_hand(hand_landmarks, frame_width, frame_height):
     }
 
 
+def draw_hand_landmarks(frame, landmarks):
+    """Draw the 21 hand points and their connections on the webcam preview."""
+    height, width = frame.shape[:2]
+    points = [
+        (
+            max(0, min(width - 1, int(point.x * width))),
+            max(0, min(height - 1, int(point.y * height))),
+        )
+        for point in landmarks
+    ]
+    for start, end in HAND_CONNECTIONS:
+        cv2.line(frame, points[start], points[end], (70, 210, 120), 2, cv2.LINE_AA)
+    for point in points:
+        cv2.circle(frame, point, 4, (245, 245, 245), -1, cv2.LINE_AA)
+        cv2.circle(frame, point, 2, (45, 110, 245), -1, cv2.LINE_AA)
+
+
 def is_up(hand, name):
     return hand[name]["state"] == "UP"
 
@@ -144,9 +205,11 @@ def get_gesture(hand, scroll_armed):
     scroll_ready = index_up and middle_up and clean_scroll_hand
 
     if left_click:
-        return "left_click", scroll_armed
+        return "left_click", False
     if right_click:
-        return "right_click", scroll_armed
+        return "right_click", False
+    if not clean_scroll_hand:
+        scroll_armed = False
     if scroll_ready:
         return "scroll_ready", True
     if scroll_armed and clean_scroll_hand:
@@ -231,19 +294,8 @@ def draw_status(frame, action, hand, fps):
     )
     cv2.putText(
         frame,
-        "FPS: {:.1f}   Q: quit",
+        "FPS: {:.1f}   Q: quit".format(fps),
         (20, 98),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (190, 190, 190),
-        1,
-        cv2.LINE_AA,
-    )
-    # Fill in the FPS value separately so the on-screen format stays simple.
-    cv2.putText(
-        frame,
-        "{:.1f}".format(fps),
-        (77, 98),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.5,
         (190, 190, 190),
@@ -253,16 +305,20 @@ def draw_status(frame, action, hand, fps):
 
 
 def main():
-    hands_api = getattr(getattr(mp, "solutions", None), "hands", None)
-    drawing_api = getattr(getattr(mp, "solutions", None), "drawing_utils", None)
-    if hands_api is None or drawing_api is None:
-        raise RuntimeError(
-            "This script needs MediaPipe's Hands solution. Install a version "
-            "that provides mediapipe.solutions.hands."
-        )
+    model_path = ensure_hand_model()
+    vision_api = mp.tasks.vision
+    options = vision_api.HandLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
+        running_mode=vision_api.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.65,
+        min_hand_presence_confidence=0.6,
+        min_tracking_confidence=0.6,
+    )
 
     camera = cv2.VideoCapture(CAMERA_INDEX)
     if not camera.isOpened():
+        camera.release()
         raise RuntimeError(
             "Could not open webcam {}. Check that it is connected and available."
             .format(CAMERA_INDEX)
@@ -280,18 +336,13 @@ def main():
     last_click_time = -CLICK_COOLDOWN_SECONDS
     previous_angles = None
     previous_frame_time = None
+    previous_timestamp_ms = -1
     previous_tick_time = time.monotonic()
     fps = 0.0
     running = True
 
     try:
-        with hands_api.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            model_complexity=1,
-            min_detection_confidence=0.65,
-            min_tracking_confidence=0.6,
-        ) as hands:
+        with vision_api.HandLandmarker.create_from_options(options) as hand_landmarker:
             while running:
                 success, frame = camera.read()
                 if not success:
@@ -301,8 +352,17 @@ def main():
                 frame = cv2.flip(frame, 1)
                 frame_height, frame_width = frame.shape[:2]
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                result = hands.process(rgb_frame)
                 now = time.monotonic()
+                timestamp_ms = max(int(now * 1000), previous_timestamp_ms + 1)
+                previous_timestamp_ms = timestamp_ms
+                media_pipe_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=rgb_frame,
+                )
+                result = hand_landmarker.detect_for_video(
+                    media_pipe_image,
+                    timestamp_ms,
+                )
                 elapsed = (
                     now - previous_frame_time
                     if previous_frame_time is not None
@@ -316,13 +376,9 @@ def main():
 
                 current_hand = None
                 action = "neutral"
-                if result.multi_hand_landmarks:
-                    hand_landmarks = result.multi_hand_landmarks[0]
-                    drawing_api.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        hands_api.HAND_CONNECTIONS,
-                    )
+                if result.hand_landmarks:
+                    hand_landmarks = result.hand_landmarks[0]
+                    draw_hand_landmarks(frame, hand_landmarks)
                     current_hand = analyze_hand(
                         hand_landmarks,
                         frame_width,
