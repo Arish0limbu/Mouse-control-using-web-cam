@@ -77,3 +77,19 @@ print("Name:", student["name"])
 print("Age:", student["age"])
 print("Course:", student["course"])
 print("College:", student["college"])
+
+file = open("student.txt", "w")
+
+file.write("Name: Arish\n")
+file.write("Course: BIT\n")
+file.write("College: Kasturi College\n")
+
+file.close()
+
+file = open("student.txt", "r")
+
+content = file.read()
+
+print(content)
+
+file.close()
