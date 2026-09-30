@@ -45,3 +45,13 @@ print("Addition:", add(a, b))
 print("Subtraction:", subtract(a, b))
 print("Multiplication:", multiply(a, b))
 print("Division:", divide(a, b))
+
+numbers = [10, 25, 7, 45, 18, 32]
+
+largest = numbers[0]
+
+for num in numbers:
+    if num > largest:
+        largest = num
+
+print("Largest number:", largest)
