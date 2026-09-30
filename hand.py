@@ -65,3 +65,15 @@ for letter in text:
         count += 1
 
 print("Number of vowels:", count)
+
+student = {
+    "name": "Arish",
+    "age": 20,
+    "course": "BIT",
+    "college": "Kasturi College"
+}
+
+print("Name:", student["name"])
+print("Age:", student["age"])
+print("Course:", student["course"])
+print("College:", student["college"])
