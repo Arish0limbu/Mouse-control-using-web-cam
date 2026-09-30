@@ -55,3 +55,13 @@ for num in numbers:
         largest = num
 
 print("Largest number:", largest)
+
+text = input("Enter a sentence: ")
+
+count = 0
+
+for letter in text:
+    if letter.lower() in "aeiou":
+        count += 1
+
+print("Number of vowels:", count)
